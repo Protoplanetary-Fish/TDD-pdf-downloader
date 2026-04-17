@@ -134,7 +134,7 @@ class PDFDownloader:
                 return self._format_line(
                     f"[{index:03}/{total}] OK", brnum, "SAVED", url, BLUE
                 )
-            elif reason in ["403", "404", "CONNECTION", "TIMEOUT", "SSL ERROR"]:
+            elif reason in ["404", "400", "301", "CONNECTION", "SSL ERROR"]:
                 self.blacklist.add_url(url)
                 print(self._format_line("", reason, "Blacklisting URL", url, YELLOW))
 

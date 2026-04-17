@@ -6,7 +6,7 @@ import requests
 def download_and_validate_pdf(url: str, save_path: Path) -> tuple[bool, str]:
     """Download a PDF and return (success, reason)."""
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=2.5)
         response.raise_for_status()
         save_path.parent.mkdir(parents=True, exist_ok=True)
         save_path.write_bytes(response.content)
@@ -25,6 +25,11 @@ def download_and_validate_pdf(url: str, save_path: Path) -> tuple[bool, str]:
         return False, "DOWNLOAD ERROR"
 
     # Validate the file
+    return validate_pdf(save_path)
+
+def validate_pdf(save_path: Path) -> tuple[bool, str]:
+    """Download a PDF and return (success, reason)."""
+    
     if not PdfValidator.is_pdf(save_path):
         save_path.unlink()  # Delete the file
         return False, "NOT A PDF"

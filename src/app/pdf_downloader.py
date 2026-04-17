@@ -1,39 +1,125 @@
 from pathlib import Path
-from colorama import Fore, Style, init
 from utils import get_host
-from blacklist import Blacklist, BLACKLIST_REASONS
-from download_and_validate import download_and_validate_pdf
 import requests
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.options import Options
+from blacklist import Blacklist, BLACKLIST_REASONS
+from download_and_validate import download_and_validate_pdf, validate_pdf
+from textcolors import *
+from pdf_validator import PdfValidator
+
+# Suppress Selenium's stderr output
+options = Options()
+options.add_argument("--headless")
+options.add_argument("--disable-blink-features=AutomationControlled")
+options.add_argument("--no-sandbox")
+options.add_argument("--disable-dev-shm-usage")
+options.add_argument("--log-level=3")  # Suppress Selenium logs
 
 class PDFDownloader:
-    RED = Fore.RED + Style.BRIGHT
-    BLUE = Fore.BLUE + Style.BRIGHT
-    GRAY = Fore.LIGHTBLACK_EX + Style.BRIGHT
-    YELLOW_BRIGHT = Fore.YELLOW + Style.BRIGHT
-    YELLOW = Fore.YELLOW + Style.DIM
-    RESET = Style.RESET_ALL
+    """
+    A class that downloads PDFs and validates their file signature.
+    Blacklists unresponsive URLs and hosts.
+    Escalates to Selenium if simple requests fail.
+    """
 
     def __init__(self, output_dir: Path, blacklist: Blacklist):
         self.output_dir = output_dir
         self.blacklist = blacklist
 
-    def is_host_alive(self, host: str) -> bool:
+    def _format_line(self, status: str, brnum: str, action: str, url: str = "", color: str = "") -> str:
+        """Formats a log line with consistent column widths."""
+        return (
+            f"{color}{status.ljust(20)} | "
+            f"{brnum.ljust(20)} | "
+            f"{action.ljust(20)} | "
+            f"{url}{RESET}"
+        )
+
+    def _get_selenium_options(self) -> Options:
+        """Return Selenium options for headless Chrome."""
+        options = Options()
+        options.add_argument("--headless")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--log-level=3")  # Suppress Selenium logs
+        return options
+
+    def _try_selenium_download(self, url: str, save_path: Path) -> tuple[bool, str]:
+        """Try downloading via Selenium as a fallback renderer."""
         try:
-            # First, try a HEAD request
-            response = requests.head(f"https://{host}", timeout=5)
+            driver = webdriver.Chrome(
+                service=Service(ChromeDriverManager().install()),
+                options=self._get_selenium_options()
+            )
+
+            driver.set_page_load_timeout(5)
+            driver.set_script_timeout(5)
+
+            try:
+                driver.get(url)
+            except Exception:
+                driver.quit()
+                return False, "SELENIUM TIMEOUT"
+
+            content = driver.page_source.encode("utf-8")
+
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            save_path.write_bytes(content)
+            valid, message = validate_pdf(save_path)
+
+            driver.quit()
+            return valid, message + " (Selenium)"
+
+        except Exception as e:
+            if 'driver' in locals():
+                driver.quit()
+
+            error = str(e)
+            if "ERR_NAME_NOT_RESOLVED" in error:
+                return False, "DNS FAILURE"
+            elif "ConnectionResetError" in error:
+                return False, "CONNECTION RESET"
+            else:
+                return False, "SELENIUM FAILURE"
+
+    def is_host_alive(self, host: str) -> bool:
+        """Check if the host is alive, with optional Selenium fallback."""
+
+        # Try simple requests first
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        try:
+            response = requests.head(f"https://{host}", headers=headers, timeout=2)
             if response.ok:
                 return True
-            # If HEAD fails, try a GET request
-            response = requests.get(f"https://{host}", timeout=5)
+            response = requests.get(f"https://{host}", headers=headers, timeout=2)
             return response.ok
-        except requests.RequestException:
+        except requests.exceptions.RequestException:
+            pass  # Fall through to Selenium
+
+        try:
+            driver = webdriver.Chrome(
+                service=Service(ChromeDriverManager().install()),
+                options=self._get_selenium_options()
+            )
+            driver.get(f"https://{host}")
+            driver.quit()
+            return True
+        except Exception:
             return False
 
     def download_brnum(self, brnum: str, urls: list, index: int, total: int) -> str:
         save_path = self.output_dir / f"{brnum}.pdf"
 
         if save_path.exists():
-            return f"[{index:03}/{total}] {self.GRAY}SKIP{self.RESET}    | {brnum} | ALREADY EXISTS "
+            return self._format_line(
+                f"[{index:03}/{total}] SKIP", brnum, "ALREADY EXISTS", "", GRAY
+            )
 
         last_error = "NO VALID URL"
 
@@ -42,25 +128,47 @@ class PDFDownloader:
             if self.blacklist.contains_url(url) or self.blacklist.contains_host(host):
                 continue
 
-            # Check if the host is alive before attempting download
-            if not self.is_host_alive(host):
-                self.blacklist.add_host(host)
-                print(f"{self.YELLOW_BRIGHT}HOST DOWN        | Blacklisting host        | {host}{self.RESET}")
-                continue
-
+            # Try downloading via requests first
             success, reason = download_and_validate_pdf(url, save_path)
-
             if success:
-                return f"[{index:03}/{total}] {self.BLUE}OK     {self.RESET} | {brnum} | SAVED          | {url}"
-            if reason in BLACKLIST_REASONS:
-                    self.blacklist.add_url(url)
-                    print(f"{self.YELLOW}{reason.ljust(15)}  | Blacklisting URL         | {url}{self.RESET}")
+                return self._format_line(
+                    f"[{index:03}/{total}] OK", brnum, "SAVED", url, BLUE
+                )
+            elif reason in ["403", "404", "CONNECTION", "TIMEOUT", "SSL ERROR"]:
+                self.blacklist.add_url(url)
+                print(self._format_line("", reason, "Blacklisting URL", url, YELLOW))
 
-            last_error = f"{reason.ljust(15)}| {url}"
+            # If requests fail, escalate to Selenium
+            success, reason = self._try_selenium_download(url, save_path)
+            if success:
+                return self._format_line(
+                    f"[{index:03}/{total}] OK", brnum, "SAVED (Selenium)", url, BLUE
+                )
+            host_failed = False
+
+            # Decide what to blacklist
+            if reason in ["DNS FAILURE", "CONNECTION RESET", "SELENIUM FAILURE", "SELENIUM TIMEOUT"]:
+                host_failed = True
+            else:
+                # Not a host issue → blacklist URL instead
+                self.blacklist.add_url(url)
+                print(self._format_line("", reason, "Blacklisting URL", url, YELLOW))
+
+            if host_failed:
+                self.blacklist.add_host(host)
+                print(self._format_line("", reason, "Blacklisting host", host, YELLOW_BRIGHT))
+
+            last_error = reason
 
         if save_path.exists():
-            return f"[{index:03}/{total}] {self.BLUE}OK     {self.RESET} | {brnum} | SAVED          | {url}"
+            return self._format_line(
+                f"[{index:03}/{total}] OK", brnum, "SAVED", "", BLUE
+            )
         if last_error == "NO VALID URL":
-            return f"[{index:03}/{total}] {self.GRAY}SKIP   {self.RESET} | {brnum} | {last_error}"
+            return self._format_line(
+                f"[{index:03}/{total}] SKIP", brnum, last_error, "", GRAY
+            )
 
-        return f"[{index:03}/{total}] {self.RED}FAIL   {self.RESET} | {brnum} | {last_error}"
+        return self._format_line(
+            f"[{index:03}/{total}] FAIL", brnum, last_error, url, RED
+        )

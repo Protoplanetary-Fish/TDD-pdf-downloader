@@ -9,6 +9,9 @@ BLACKLIST_REASONS = {
 }
 
 class Blacklist:
+    """
+    A class that tracks and checks if urls/hosts are blacklisted.
+    """
     def __init__(self):
         self.lock = Lock()
         self.urls = set()  # For specific URLs
@@ -24,20 +27,20 @@ class Blacklist:
 
     def contains_url(self, url: str) -> bool:
         with self.lock:
-            return url in self.urls
+            return url.strip() in self.urls
 
     def contains_host(self, host: str) -> bool:
         with self.lock:
-            return host in self.hosts
+            return host.strip() in self.hosts
 
     def add_url(self, url: str):
         with self.lock:
-            self.urls.add(url)
+            self.urls.add(url.strip())
             self._save()
 
     def add_host(self, host: str):
         with self.lock:
-            self.hosts.add(host)
+            self.hosts.add(host.strip())
             self._save()
 
     def _save(self):

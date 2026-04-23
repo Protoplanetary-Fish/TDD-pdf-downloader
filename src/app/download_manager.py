@@ -15,7 +15,7 @@ class DownloadManager:
 
     Skips files already downloaded and uses a blacklist to store unresponsive URLs and hosts.
     """
-    def __init__(self, excel_path: Path, output_dir: Path, num_new_files=10, max_workers=15):
+    def __init__(self, excel_path: Path, output_dir: Path, num_new_files=10, max_workers=10):
         self.excel_reader = ExcelReader(excel_path)
         self.output_dir = output_dir
         self.blacklist = Blacklist()

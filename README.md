@@ -40,8 +40,6 @@ The **PDF Downloader** tool reads URLs from an Excel file, downloads PDFs in par
 ## Requirements
 
 - **Python 3.12 or higher**
-- **Internet connection** (for downloading PDFs and updating dependencies)
-- **Chrome** (if using Selenium fallback)
 
 ---
 
